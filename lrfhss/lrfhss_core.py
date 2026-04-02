@@ -75,54 +75,58 @@ class Node():
         self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
 
     def transmit(self, env, bs):
-        while True:
+        while 1:
+            # Reset period marker BEFORE calling traffic_function
+            # (ensures only one AR(1) update per λ-period)
+            if hasattr(self.traffic_generator, '_called_this_period'):
+                self.traffic_generator._called_this_period = False
+            
+            # Get next transmission time
             wait_time = self.next_transmission()
+            # Wait for that time
             yield env.timeout(wait_time)
-
-            # Check semantic decision
+            
+            # SEMANTIC FILTER: Check if traffic generator approves transmission now
+            # If not semantic traffic, should_send_now() doesn't exist, so always transmit
             if hasattr(self.traffic_generator, 'should_send_now'):
                 if not self.traffic_generator.should_send_now():
+                    # Semantic says "don't transmit" - skip this transmission cycle
+                    # Continue to next iteration (another λ period)
                     continue
-
-            # ✔ TRANSMISSION HAPPENS HERE → reset AoI here
-            if hasattr(self.traffic_generator, 'on_transmit'):
-                self.traffic_generator.on_transmit()
-
+            
+            # Approved for transmission (or not semantic traffic)
             self.transmitted += 1
-
-            self.packet = Packet(self.id, self.obw, self.headers,
-                                 self.payloads, self.header_duration, self.payload_duration)
-
+            # Create fresh packet for this transmission
+            self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
             bs.add_packet(self.packet)
-
             next_fragment = self.packet.next()
             first_payload = 0
-
             self.initial_timestamp.append(env.now)
 
             while next_fragment:
-
-                if first_payload == 0 and next_fragment.type == 'payload':
-                    first_payload = 1
+                if first_payload == 0 and next_fragment.type=='payload': #account for the transceiver wait time between the last header and first payload fragment
+                    first_payload=1
                     yield env.timeout(self.transceiver_wait)
-
                 next_fragment.timestamp = env.now
-
+                #checks if the fragment is colliding with the fragments in transmission now
                 bs.check_collision(next_fragment)
+                #add the fragment to the list of fragments being transmitted.
                 bs.receive_packet(next_fragment)
-
+                #wait the duration (time on air) of the fragment
                 yield env.timeout(next_fragment.duration)
-
+                #removes the fragment from the list.
                 bs.finish_fragment(next_fragment)
-
+                #check if base can decode the packet now.
+                #tries to decode if not decoded yet.
                 if self.packet.success == 0:
-                    bs.try_decode(self, self.packet, env.now)
-
+                    bs.try_decode(self, self.packet,env.now)
+                #select the next fragment
                 next_fragment = self.packet.next()
-
+            
             if self.packet.success == 0:
                 self.final_timestamp.append(0)
 
+            #end of transmission procedure
             self.end_of_transmission()
 
 class Base():
