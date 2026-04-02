@@ -75,39 +75,54 @@ class Node():
         self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
 
     def transmit(self, env, bs):
-        while 1:
-            #time between transmissions
-            yield env.timeout(self.next_transmission())
+        while True:
+            wait_time = self.next_transmission()
+            yield env.timeout(wait_time)
+
+            # Check semantic decision
+            if hasattr(self.traffic_generator, 'should_send_now'):
+                if not self.traffic_generator.should_send_now():
+                    continue
+
+            # ✔ TRANSMISSION HAPPENS HERE → reset AoI here
+            if hasattr(self.traffic_generator, 'on_transmit'):
+                self.traffic_generator.on_transmit()
+
             self.transmitted += 1
+
+            self.packet = Packet(self.id, self.obw, self.headers,
+                                 self.payloads, self.header_duration, self.payload_duration)
+
             bs.add_packet(self.packet)
+
             next_fragment = self.packet.next()
             first_payload = 0
+
             self.initial_timestamp.append(env.now)
 
             while next_fragment:
-                if first_payload == 0 and next_fragment.type=='payload': #account for the transceiver wait time between the last header and first payload fragment
-                    first_payload=1
+
+                if first_payload == 0 and next_fragment.type == 'payload':
+                    first_payload = 1
                     yield env.timeout(self.transceiver_wait)
+
                 next_fragment.timestamp = env.now
-                #checks if the fragment is colliding with the fragments in transmission now
+
                 bs.check_collision(next_fragment)
-                #add the fragment to the list of fragments being transmitted.
                 bs.receive_packet(next_fragment)
-                #wait the duration (time on air) of the fragment
+
                 yield env.timeout(next_fragment.duration)
-                #removes the fragment from the list.
+
                 bs.finish_fragment(next_fragment)
-                #check if base can decode the packet now.
-                #tries to decode if not decoded yet.
+
                 if self.packet.success == 0:
-                    bs.try_decode(self, self.packet,env.now)
-                #select the next fragment
+                    bs.try_decode(self, self.packet, env.now)
+
                 next_fragment = self.packet.next()
-            
+
             if self.packet.success == 0:
                 self.final_timestamp.append(0)
 
-            #end of transmission procedure
             self.end_of_transmission()
 
 class Base():

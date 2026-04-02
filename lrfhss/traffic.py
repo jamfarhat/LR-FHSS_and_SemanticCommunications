@@ -1,6 +1,8 @@
 import random
+import numpy as np
 from lrfhss.lrfhss_core import Traffic
 import warnings
+
 
 ## Exponential traffic
 class Exponential_Traffic(Traffic):
@@ -73,3 +75,90 @@ class Two_State_Markovian_Traffic(Traffic):
         
         self.state=1
         return max(0,discrete_time * self.traffic_param['markov_time'] + random.gauss(0,1))
+
+
+## Semantic-Driven Traffic with AR(1) Process Model
+class SemanticTraffic(Traffic):
+
+    def __init__(self, traffic_param):
+        super().__init__(traffic_param)
+
+        # AR(1)
+        self.alpha = traffic_param.get('alpha', 0.95)
+        self.sigma_w = traffic_param.get('sigma_w', 1.0)
+
+        # Threshold
+        self.epsilon_0 = traffic_param.get('epsilon_0', 1.0)
+        self.epsilon_min = traffic_param.get('epsilon_min', 0.1)
+        self.beta = traffic_param.get('beta', 0.01)
+
+        # FIX: deterministic λ
+        self.lambda_interval = traffic_param.get('average_interval', 900.0)
+
+        # Process state
+        self.x_current = np.random.normal(0, self.sigma_w)
+        self.x_last_tx = self.x_current
+
+        self.aoi_local = 0.0
+
+        self._approve_transmission = True
+
+    def next_arrival(self):
+        """
+        Time-consistent AR(1) evolution.
+        """
+        # Process noise scaled with time
+        w = np.random.normal(0, self.sigma_w * np.sqrt(dt))
+
+        # State evolution
+        self.x_current = (self.alpha ** dt) * self.x_current + w
+    # -------------------------
+    # AR(1) evolution (fixed λ)
+    # -------------------------
+    def update_ar1(self):
+        w = np.random.normal(0, self.sigma_w)
+        self.x_current = self.alpha * self.x_current + w
+
+    def get_distortion(self):
+        return abs(self.x_current - self.x_last_tx)
+
+    def get_threshold(self):
+        return max(self.epsilon_min,
+                   self.epsilon_0 - self.beta * self.aoi_local)
+
+    def should_transmit(self):
+        """
+        Time-aware semantic decision using prediction error.
+        """
+
+        # Predict state from last transmitted value
+        x_pred = (self.alpha ** dt) * self.x_last_tx
+
+        # Innovation (estimation error)
+        error = abs(self.x_current - x_pred)
+
+        return error > self.threshold
+
+    def should_send_now(self):
+        return self._approve_transmission
+
+    def on_transmit(self):
+        """Called by Node when transmission actually occurs"""
+        self.x_last_tx = self.x_current
+        self.aoi_local = 0.0
+
+    def traffic_function(self):
+        """
+        Called every λ seconds (deterministic)
+        """
+
+        # 1. Evolve process
+        self.update_ar1()
+
+        # 2. Update AoI
+        self.aoi_local += self.lambda_interval
+
+        # 3. Decide transmission
+        self._approve_transmission = self.should_transmit()
+
+        return self.lambda_interval
