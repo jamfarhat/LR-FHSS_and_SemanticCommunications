@@ -1,0 +1,7 @@
+- Verificar a questão da alocação de configurações (ainda não implementado);
+- Incluir curvas variando parâmetros-chave do Semantic
+- Conferir se isso aqui está certo: "# If already called this period, return exponential without processing
+        # (avoid multiple AR(1) evolutions in same λ-interval)"
+- traffic é exclusivo de cada device?
+- Gráfico fazendo tracking de um AR(1) de dispositivo e indicando quando transmitir? Mostrando threshold, AoI e tal? 
+AoI máx e min, incluir curva de distorção semântica 
