@@ -77,6 +77,84 @@ class Two_State_Markovian_Traffic(Traffic):
         return max(0,discrete_time * self.traffic_param['markov_time'] + random.gauss(0,1))
 
 
+class DistortionAwareExponentialTraffic(Traffic):
+    """
+    Traditional exponential traffic with AR(1)-based distortion monitoring.
+
+    This class keeps the same transmission behavior as Exponential_Traffic
+    (always transmit on each epoch) and adds semantic distortion tracking so
+    DR8/DR9 can be fairly compared against semantic scheduling.
+    """
+
+    def __init__(self, traffic_param):
+        super().__init__(traffic_param)
+        if 'average_interval' not in self.traffic_param:
+            warnings.warn('DistortionAwareExponentialTraffic: average_interval missing. Using default 900s')
+            self.traffic_param['average_interval'] = 900.0
+
+        self.lambda_interval = self.traffic_param['average_interval']
+        self.alpha = self.traffic_param.get('alpha', 0.95)
+        self.sigma_w = self.traffic_param.get('sigma_w', 1.0)
+
+        self.track_trace = bool(self.traffic_param.get('track_trace', False))
+
+        self.x_current = np.random.normal(0, self.sigma_w)
+        self.x_last_tx = np.random.normal(0, self.sigma_w)
+        self.aoi_local = np.random.uniform(0, self.lambda_interval)
+        self._time = 0.0
+
+        self._distortion_accum = 0.0
+        self._decision_count = 0
+        self._trace = []
+
+    def traffic_function(self):
+        return random.expovariate(1 / self.lambda_interval)
+
+    def update_ar1(self, dt):
+        if self.lambda_interval <= 0:
+            dt_ratio = 1.0
+        else:
+            dt_ratio = max(1e-9, dt / self.lambda_interval)
+        alpha_eff = self.alpha ** dt_ratio
+        sigma_eff = self.sigma_w * np.sqrt(dt_ratio)
+        self.x_current = alpha_eff * self.x_current + np.random.normal(0, sigma_eff)
+
+    def get_distortion(self):
+        return abs(self.x_current - self.x_last_tx)
+
+    def on_decision_epoch(self, dt):
+        self._time += dt
+        self.update_ar1(dt)
+        self.aoi_local += dt
+
+        distortion = self.get_distortion()
+        self._distortion_accum += distortion
+        self._decision_count += 1
+
+        # Traditional policy always transmits at each scheduled epoch.
+        self.x_last_tx = self.x_current
+        self.aoi_local = 0.0
+
+        if self.track_trace:
+            self._trace.append({
+                'time': self._time,
+                'distortion': distortion,
+                'threshold': np.nan,
+                'tx_decision': True,
+            })
+
+    def should_send_now(self):
+        return True
+
+    def get_average_distortion(self):
+        if self._decision_count == 0:
+            return np.nan
+        return self._distortion_accum / self._decision_count
+
+    def get_trace(self):
+        return list(self._trace)
+
+
 ## Semantic-Driven Traffic with AR(1) Process Model
 class SemanticTraffic(Traffic):
     r"""
@@ -132,7 +210,8 @@ class SemanticTraffic(Traffic):
         self.sigma_w = traffic_param.get('sigma_w', 1.0)
         
         # Semantic threshold parameters
-        self.epsilon_0 = traffic_param.get('epsilon_0', 1.0)
+        # Backward-compatible alias: some scripts still use threshold_0.
+        self.epsilon_0 = traffic_param.get('epsilon_0', traffic_param.get('threshold_0', 1.0))
         self.epsilon_min = traffic_param.get('epsilon_min', 0.1)
         self.beta = traffic_param.get('beta', 0.01)
         
@@ -141,6 +220,25 @@ class SemanticTraffic(Traffic):
             warnings.warn('SemanticTraffic: average_interval missing. Using default 900s')
             traffic_param['average_interval'] = 900.0
         self.lambda_interval = traffic_param['average_interval']
+        self.track_trace = bool(traffic_param.get('track_trace', False))
+
+        # Optional semantic-to-robustness mapping.
+        # Each entry is ordered by increasing max_distortion and may specify
+        # headers and code. Example:
+        # [
+        #   {'max_distortion': 0.5, 'headers': 1, 'code': '5/6'},
+        #   {'max_distortion': 1.5, 'headers': 2, 'code': '2/3'},
+        #   {'max_distortion': float('inf'), 'headers': 3, 'code': '1/3'},
+        # ]
+        default_configs = [
+            {'max_distortion': self.epsilon_0, 'headers': 1, 'code': '5/6'},
+            {'max_distortion': 2 * self.epsilon_0, 'headers': 2, 'code': '2/3'},
+            {'max_distortion': float('inf'), 'headers': 3, 'code': '1/3'},
+        ]
+        self.semantic_configs = sorted(
+            traffic_param.get('semantic_configs', default_configs),
+            key=lambda c: c.get('max_distortion', float('inf')),
+        )
         
         # AR(1) process state
         # Initialize with random values to break synchronization between nodes
@@ -150,15 +248,32 @@ class SemanticTraffic(Traffic):
         
         # Transmission approval flag (set by traffic_function, checked by Node)
         self._approve_transmission = True
+        self._last_distortion = 0.0
+        self._last_threshold = self.epsilon_0
+        self._last_aoi_before = self.aoi_local
+        self._last_aoi_after = self.aoi_local
+        self._last_tx_decision = False
+        self._tx_config = None
+        self._time = 0.0
+        self._distortion_accum = 0.0
+        self._decision_count = 0
+        self._trace = []
         
         # Tracking for avoiding multiple updates in same λ-period
         # Set to True when traffic_function() is called, False when Node transmits/skips
         self._called_this_period = False
     
     def update_ar1(self, dt):
-        """Evolve AR(1) process over time dt."""
-        w = np.random.normal(0, self.sigma_w)
-        self.x_current = self.alpha * self.x_current + w
+        """Evolve AR(1) process over elapsed time dt."""
+        # Use dt-scaled equivalent step to keep dynamics tied to real epoch spacing.
+        if self.lambda_interval <= 0:
+            dt_ratio = 1.0
+        else:
+            dt_ratio = max(1e-9, dt / self.lambda_interval)
+        alpha_eff = self.alpha ** dt_ratio
+        sigma_eff = self.sigma_w * np.sqrt(dt_ratio)
+        w = np.random.normal(0, sigma_eff)
+        self.x_current = alpha_eff * self.x_current + w
     
     def get_distortion(self):
         """Equation (7): D_k(t) = |x_k(t) - x̂_k(t)|"""
@@ -180,51 +295,63 @@ class SemanticTraffic(Traffic):
         Returns the flag set by the last traffic_function() call.
         """
         return self._approve_transmission
-    
-    def traffic_function(self):
-        """
-        SEMANTIC TRAFFIC DECISION AT λ-INTERVALS:
-        
-        DESIGN: Called by Node at λ-intervals. Decides whether next transmission is
-        semantically relevant and sets _approve_transmission flag.
-        
-        CRITICAL: Add jitter/randomness to break synchronization (like Exponential_Traffic).
-        Use exponential distribution with mean λ to maintain fairness while adding asynchrony.
-        
-        Only process evolution happens on FIRST call per λ-period (tracked via _called_this_period).
-        Subsequent calls in same period return immediately without processing.
-        
-        Flow:
-        1. If already called this period: return exponential without processing
-        2. Else: advance AR(1), update AoI, evaluate decision
-        3. Set _approve_transmission flag
-        4. Mark as "called this period"
-        5. Return exponential random time (like Traditional traffic)
-        """
-        # If already called this period, return exponential without processing
-        # (avoid multiple AR(1) evolutions in same λ-interval)
-        if self._called_this_period:
-            return random.expovariate(1 / self.lambda_interval)
-        
-        # Mark as called this period
-        self._called_this_period = True
-        
-        # Step 1: Advance physical process (λ time has passed since last decision)
-        self.update_ar1(dt=self.lambda_interval)
-        
-        # Step 2: Increment local AoI
-        self.aoi_local += self.lambda_interval
-        
-        # Step 3: Evaluate transmission decision using CURRENT state
-        if self.should_transmit():
-            # APPROVE: Semantic relevance condition met
+
+    def _select_semantic_config(self, distortion):
+        """Select semantic robustness configuration based on distortion."""
+        if not self.semantic_configs:
+            return None
+        for cfg in self.semantic_configs:
+            if distortion < cfg.get('max_distortion', float('inf')):
+                return cfg
+        return self.semantic_configs[-1]
+
+    def get_tx_params(self):
+        """Return the selected transmission config for current epoch."""
+        return self._tx_config
+
+    def on_decision_epoch(self, dt):
+        """Update process/AoI and evaluate semantic decision at the current epoch."""
+        self._time += dt
+        self.update_ar1(dt=dt)
+        self.aoi_local += dt
+        self._last_aoi_before = self.aoi_local
+
+        distortion = self.get_distortion()
+        self._distortion_accum += distortion
+        self._decision_count += 1
+        self._last_distortion = distortion
+        threshold = self.get_threshold(self.aoi_local)
+        self._last_threshold = threshold
+
+        if distortion >= threshold:
             self._approve_transmission = True
+            self._last_tx_decision = True
+            self._tx_config = self._select_semantic_config(distortion)
             self.x_last_tx = self.x_current
             self.aoi_local = 0.0
         else:
-            # DENY: Not semantically relevant
             self._approve_transmission = False
-        
-        # Step 4: Return exponential random time (for asynchrony like Traditional traffic)
-        # This breaks synchronization while maintaining fair average interval λ
+            self._last_tx_decision = False
+            self._tx_config = None
+        self._last_aoi_after = self.aoi_local
+
+        if self.track_trace:
+            self._trace.append({
+                'time': self._time,
+                'distortion': distortion,
+                'threshold': threshold,
+                'tx_decision': self._last_tx_decision,
+            })
+
+    def get_average_distortion(self):
+        if self._decision_count == 0:
+            return np.nan
+        return self._distortion_accum / self._decision_count
+
+    def get_trace(self):
+        return list(self._trace)
+    
+    def traffic_function(self):
+        # Return the next decision epoch. Semantic state update happens when that
+        # epoch is reached inside Node.transmit().
         return random.expovariate(1 / self.lambda_interval)

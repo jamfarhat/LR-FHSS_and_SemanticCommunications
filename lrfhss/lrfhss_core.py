@@ -16,11 +16,12 @@ class Fragment():
         self.collided = []
 
 class Packet():
-    def __init__(self, node_id, obw, headers, payloads, header_duration, payload_duration):
+    def __init__(self, node_id, obw, headers, payloads, header_duration, payload_duration, threshold=None):
         self.id = id(self)
         self.node_id = node_id
         self.index_transmission = 0
         self.success = 0
+        self.threshold = threshold
         self.channels = random.choices(range(obw), k=headers+payloads)
         self.fragments = []
 
@@ -52,39 +53,81 @@ class Traffic(ABC):
         pass
 
 class Node():
-    def __init__(self, obw, headers, payloads, header_duration, payload_duration, transceiver_wait, traffic_generator):
+    def __init__(self, obw, headers, payloads, threshold, payload_size, header_duration, payload_duration, transceiver_wait, traffic_generator):
         self.id = id(self)
         self.transmitted = 0
         self.traffic_generator = traffic_generator
         self.transceiver_wait = transceiver_wait
         # Packet info that Node has to store
         self.obw = obw
-        self.headers = headers
-        self.payloads = payloads
+        self.default_headers = headers
+        self.default_payloads = payloads
+        self.default_threshold = threshold
+        self.payload_size = payload_size
         self.header_duration = header_duration
         self.payload_duration = payload_duration
         self.initial_timestamp = []
         self.final_timestamp = []
+        self.tx_airtime = 0.0
+        self.headers = headers
+        self.payloads = payloads
+        self.threshold = threshold
         
-        self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
+        self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
+
+    def _code_to_payload_threshold(self, code):
+        if code == '1/3':
+            payloads = np.ceil((self.payload_size + 3) / 2).astype('int')
+            threshold = np.ceil(payloads / 3).astype('int')
+        elif code == '2/3':
+            payloads = np.ceil((self.payload_size + 3) / 4).astype('int')
+            threshold = np.ceil((2 * payloads) / 3).astype('int')
+        elif code == '5/6':
+            payloads = np.ceil((self.payload_size + 3) / 5).astype('int')
+            threshold = np.ceil((5 * payloads) / 6).astype('int')
+        elif code == '1/2':
+            payloads = np.ceil((self.payload_size + 3) / 3).astype('int')
+            threshold = np.ceil(payloads / 2).astype('int')
+        else:
+            payloads = self.default_payloads
+            threshold = self.default_threshold
+        return int(payloads), int(threshold)
+
+    def _apply_semantic_tx_config(self):
+        self.headers = self.default_headers
+        self.payloads = self.default_payloads
+        self.threshold = self.default_threshold
+
+        if not hasattr(self.traffic_generator, 'get_tx_params'):
+            return
+
+        cfg = self.traffic_generator.get_tx_params()
+        if not cfg:
+            return
+
+        if 'headers' in cfg:
+            self.headers = int(cfg['headers'])
+
+        if 'code' in cfg:
+            self.payloads, self.threshold = self._code_to_payload_threshold(cfg['code'])
 
     def next_transmission(self):
         return self.traffic_generator.traffic_function()
 
     def end_of_transmission(self):
-        self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
+        self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
 
     def transmit(self, env, bs):
         while 1:
-            # Reset period marker BEFORE calling traffic_function
-            # (ensures only one AR(1) update per λ-period)
-            if hasattr(self.traffic_generator, '_called_this_period'):
-                self.traffic_generator._called_this_period = False
-            
             # Get next transmission time
             wait_time = self.next_transmission()
             # Wait for that time
             yield env.timeout(wait_time)
+
+            # For semantic traffic, evaluate process evolution and decision
+            # at the actual decision epoch.
+            if hasattr(self.traffic_generator, 'on_decision_epoch'):
+                self.traffic_generator.on_decision_epoch(wait_time)
             
             # SEMANTIC FILTER: Check if traffic generator approves transmission now
             # If not semantic traffic, should_send_now() doesn't exist, so always transmit
@@ -96,8 +139,15 @@ class Node():
             
             # Approved for transmission (or not semantic traffic)
             self.transmitted += 1
+
+            # Semantic mode may adapt headers/CR per packet from current distortion.
+            self._apply_semantic_tx_config()
+
+            # Track actual transmission airtime for energy-efficiency metrics.
+            self.tx_airtime += self.headers * self.header_duration + self.payloads * self.payload_duration
+
             # Create fresh packet for this transmission
-            self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration)
+            self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
             bs.add_packet(self.packet)
             next_fragment = self.packet.next()
             first_payload = 0
@@ -161,7 +211,8 @@ class Base():
     def try_decode(self,node,packet,now):
         h_success = sum( ((len(f.collided)==0) and f.transmitted==1) if (f.type=='header') else 0 for f in packet.fragments)
         p_success = sum( ((len(f.collided)==0) and f.transmitted==1) if (f.type=='payload') else 0 for f in packet.fragments)
-        success = 1 if ((h_success>0) and (p_success >= self.threshold)) else 0
+        required_payloads = packet.threshold if packet.threshold is not None else self.threshold
+        success = 1 if ((h_success>0) and (p_success >= required_payloads)) else 0
         if success == 1:
             self.packets_received[packet.node_id] += 1
             packet.success = 1

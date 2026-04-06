@@ -4,6 +4,17 @@ from lrfhss.utils import compute_aoi
 import simpy
 
 def run_sim(settings: Settings, seed=0):
+    """Backward-compatible summary output used by existing scripts."""
+    details = _run_sim_internal(settings, seed=seed)
+    return details['summary']
+
+
+def run_sim_detailed(settings: Settings, seed=0):
+    """Extended simulation metrics for post-processing and plotting."""
+    return _run_sim_internal(settings, seed=seed)
+
+
+def _run_sim_internal(settings: Settings, seed=0):
     random.seed(seed)
     np.random.seed(seed)
     env = simpy.Environment()
@@ -15,7 +26,17 @@ def run_sim(settings: Settings, seed=0):
         # CRITICAL: Each node needs its OWN traffic_generator instance
         # (not shared across nodes)
         traffic_gen = settings.traffic_generator.__class__(settings.traffic_generator.traffic_param)
-        node = Node(settings.obw, settings.headers, settings.payloads, settings.header_duration, settings.payload_duration, settings.transceiver_wait, traffic_gen)
+        node = Node(
+            settings.obw,
+            settings.headers,
+            settings.payloads,
+            settings.threshold,
+            settings.payload_size,
+            settings.header_duration,
+            settings.payload_duration,
+            settings.transceiver_wait,
+            traffic_gen,
+        )
         bs.add_node(node.id)
         nodes.append(node)
         env.process(node.transmit(env, bs))
@@ -27,16 +48,49 @@ def run_sim(settings: Settings, seed=0):
     mean_aoi  = compute_aoi(nodes, settings.simulation_time)
     success    = sum(bs.packets_received.values())
     transmitted = sum(n.transmitted for n in nodes)
+    total_tx_airtime = sum(n.tx_airtime for n in nodes)
+
+    distortions = []
+    for node in nodes:
+        tg = node.traffic_generator
+        if hasattr(tg, 'get_average_distortion'):
+            d = tg.get_average_distortion()
+            if not np.isnan(d):
+                distortions.append(float(d))
+    mean_semantic_distortion = float(np.mean(distortions)) if distortions else float('nan')
 
     if transmitted == 0:
-        return [[1.0], [0], [0], [mean_aoi]]
+        summary = [[1.0], [0], [0], [mean_aoi], [0.0]]
+        return {
+            'summary': summary,
+            'success_ratio': 1.0,
+            'goodput_bits': 0.0,
+            'transmitted': 0,
+            'mean_aoi': float(mean_aoi),
+            'total_tx_airtime': 0.0,
+            'mean_semantic_distortion': mean_semantic_distortion,
+            'success_count': int(success),
+        }
 
-    return [
+    success_ratio = success / transmitted
+    goodput_bits = success * settings.payload_size * 8
+    summary = [
         [success / transmitted],          # PDR
-        [success * settings.payload_size], # goodput (bytes)
+        [success * settings.payload_size * 8], # goodput (bits)
         [transmitted],
         [mean_aoi],
+        [total_tx_airtime],              # total packet airtime (s)
     ]
+    return {
+        'summary': summary,
+        'success_ratio': float(success_ratio),
+        'goodput_bits': float(goodput_bits),
+        'transmitted': int(transmitted),
+        'mean_aoi': float(mean_aoi),
+        'total_tx_airtime': float(total_tx_airtime),
+        'mean_semantic_distortion': mean_semantic_distortion,
+        'success_count': int(success),
+    }
 
     #Get the average success per device, used to plot the CDF 
     #success_per_device = [1 if n.transmitted == 0 else bs.packets_received[n.id]/n.transmitted for n in nodes]
