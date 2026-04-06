@@ -1,2 +1,0 @@
-- Conferir se isso aqui está certo: "# If already called this period, return exponential without processing
-        # (avoid multiple AR(1) evolutions in same λ-interval)"
