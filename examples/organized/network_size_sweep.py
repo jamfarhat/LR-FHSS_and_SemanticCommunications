@@ -36,6 +36,7 @@ from lrfhss.run import run_sim_detailed
 from lrfhss.settings import Settings
 from lrfhss.traffic import DistortionAwareExponentialTraffic, SemanticTraffic
 from examples.organized.sim_params import get_base_traffic_params, get_semantic_params
+from examples.organized.plot_style import apply_matlab_style, save_fig, protocol_plot_kwargs
 
 
 FULL_SIM_TIME = 3600
@@ -175,142 +176,83 @@ def run_experiment(sim_time: int, seeds: list[int], node_counts: list[int], n_jo
     return raw_df, summary_df, output_dir
 
 
-def plot_results(summary_df: pd.DataFrame, output_dir: str) -> str:
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharex=True)
-
-    metric_cfg = [
-        ('mean_aoi_s', 'AoI (s)', 'Average Age of Information'),
-        ('mean_semantic_distortion', 'Distortion', 'Mean Semantic Distortion'),
-        ('energy_efficiency_bits_per_j', 'bits/J', 'Energy Efficiency'),
-        ('success_probability', 'Probability', 'Success Probability'),
-    ]
-
-    colors = {
-        'DR8': '#1f77b4',
-        'DR9': '#ff7f0e',
-        'Semantic': '#2ca02c',
-    }
-    markers = {
-        'DR8': 'o',
-        'DR9': 's',
-        'Semantic': '^',
-    }
-
-    for ax, (metric, ylabel, title) in zip(axes.flat, metric_cfg):
-        for protocol in ['DR8', 'DR9', 'Semantic']:
-            p_df = summary_df[summary_df['protocol'] == protocol].sort_values('devices')
-            ax.plot(
-                p_df['devices'],
-                p_df[metric],
-                marker=markers[protocol],
-                linewidth=2.2,
-                label=protocol,
-                color=colors[protocol],
-                markerfacecolor='white',
-                markeredgewidth=1.6,
-            )
-
-            std_col = f'{metric}_std'
-            if std_col in p_df.columns:
-                y = p_df[metric].to_numpy(dtype=float)
-                y_std = p_df[std_col].to_numpy(dtype=float)
-                ax.fill_between(
-                    p_df['devices'],
-                    y - y_std,
-                    y + y_std,
-                    color=colors[protocol],
-                    alpha=0.12,
-                )
-
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.grid(True, alpha=0.35, linestyle=':')
-
-    for ax in axes[1, :]:
-        ax.set_xlabel('Number of Devices')
+def _plot_single_metric(summary_df: pd.DataFrame, output_dir: str,
+                        metric: str, ylabel: str, filename: str) -> None:
+    """Plot one metric vs number of devices as a standalone figure."""
+    fig, ax = plt.subplots(figsize=(6, 4.5))
 
     ticks = sorted(summary_df['devices'].unique())
-    for ax in axes.flat:
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([f'{int(t/1000)}K' for t in ticks], rotation=30)
-
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', ncol=3, frameon=False)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-
-    plot_path = os.path.join(output_dir, 'metrics_by_num_devices.png')
-    fig.savefig(plot_path, dpi=250, bbox_inches='tight')
-    plt.close(fig)
-
-    print(f'[OK] Plot saved to: {plot_path}')
-    return plot_path
-
-
-def plot_tradeoff_aoi_vs_energy(summary_df: pd.DataFrame, output_dir: str) -> str:
-    fig, ax = plt.subplots(figsize=(10, 7))
-
-    colors = {
-        'DR8': '#1f77b4',
-        'DR9': '#ff7f0e',
-        'Semantic': '#2ca02c',
-    }
-    markers = {
-        'DR8': 'o',
-        'DR9': 's',
-        'Semantic': '^',
-    }
 
     for protocol in ['DR8', 'DR9', 'Semantic']:
         p_df = summary_df[summary_df['protocol'] == protocol].sort_values('devices')
+        ax.plot(p_df['devices'], p_df[metric], **protocol_plot_kwargs(protocol))
 
+        std_col = f'{metric}_std'
+        if std_col in p_df.columns:
+            y = p_df[metric].to_numpy(dtype=float)
+            y_std = p_df[std_col].to_numpy(dtype=float)
+            ax.fill_between(
+                p_df['devices'], y - y_std, y + y_std,
+                color=protocol_plot_kwargs(protocol)['color'], alpha=0.10,
+            )
+
+    ax.set_xlabel('Number of Devices')
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f'{int(t / 1000)}K' for t in ticks], rotation=30)
+    ax.legend(loc='best')
+    fig.tight_layout()
+    save_fig(fig, output_dir, filename)
+
+
+def plot_results(summary_df: pd.DataFrame, output_dir: str) -> None:
+    """Generate one standalone figure per metric."""
+    metrics = [
+        ('mean_aoi_s',                    'Average Age of Information (s)',  'aoi_vs_devices'),
+        ('mean_semantic_distortion',      'Mean Semantic Distortion',       'distortion_vs_devices'),
+        ('energy_efficiency_bits_per_j',  'Energy Efficiency (bits/J)',     'ee_vs_devices'),
+        ('success_probability',           'Success Probability',            'success_prob_vs_devices'),
+    ]
+    for metric, ylabel, filename in metrics:
+        _plot_single_metric(summary_df, output_dir, metric, ylabel, filename)
+
+
+def plot_tradeoff_aoi_vs_energy(summary_df: pd.DataFrame, output_dir: str) -> None:
+    """Trade-off scatter: AoI vs Energy Efficiency."""
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+
+    for protocol in ['DR8', 'DR9', 'Semantic']:
+        p_df = summary_df[summary_df['protocol'] == protocol].sort_values('devices')
         ax.plot(
             p_df['mean_aoi_s'],
             p_df['energy_efficiency_bits_per_j'],
-            marker=markers[protocol],
-            linewidth=2.2,
-            label=protocol,
-            color=colors[protocol],
-            markerfacecolor='white',
-            markeredgewidth=1.6,
+            **protocol_plot_kwargs(protocol),
         )
 
-        # Keep only endpoint labels to reduce clutter with denser sweeps.
         first = p_df.iloc[0]
         last = p_df.iloc[-1]
+        clr = protocol_plot_kwargs(protocol)['color']
         ax.annotate(
             f"{int(first['devices'] / 1000)}K",
             (first['mean_aoi_s'], first['energy_efficiency_bits_per_j']),
-            textcoords='offset points',
-            xytext=(5, 5),
-            fontsize=8,
-            color=colors[protocol],
+            textcoords='offset points', xytext=(5, 5), fontsize=8, color=clr,
         )
         ax.annotate(
             f"{int(last['devices'] / 1000)}K",
             (last['mean_aoi_s'], last['energy_efficiency_bits_per_j']),
-            textcoords='offset points',
-            xytext=(5, -10),
-            fontsize=8,
-            color=colors[protocol],
+            textcoords='offset points', xytext=(5, -10), fontsize=8, color=clr,
         )
 
-    ax.set_title('Trade-off: AoI vs Energy Efficiency')
     ax.set_xlabel('Mean AoI (s)')
     ax.set_ylabel('Energy Efficiency (bits/J)')
-    ax.grid(True, alpha=0.35, linestyle=':')
-    ax.legend(frameon=False)
-
+    ax.legend(loc='best')
     fig.tight_layout()
-
-    plot_path = os.path.join(output_dir, 'tradeoff_aoi_vs_energy.png')
-    fig.savefig(plot_path, dpi=250, bbox_inches='tight')
-    plt.close(fig)
-
-    print(f'[OK] Trade-off plot saved to: {plot_path}')
-    return plot_path
+    save_fig(fig, output_dir, 'tradeoff_aoi_vs_energy')
 
 
 def main():
+    apply_matlab_style()
+
     parser = argparse.ArgumentParser(description='Network-size sweep for DR8/DR9/Semantic')
     parser.add_argument('--full', action='store_true', help='Run full profile (slower, higher fidelity)')
     parser.add_argument('--jobs', type=int, default=-1, help='Parallel workers for per-seed simulations')

@@ -2,7 +2,7 @@ import random
 import numpy as np
 from abc import ABC, abstractmethod
 
-        
+
 class Fragment():
     def __init__(self, type, duration, channel, packet):
         self.packet = packet
@@ -31,16 +31,11 @@ class Packet():
             self.fragments.append(Fragment('payload',payload_duration, self.channels[p+h+1], self.id))
 
     def next(self):
-        self.index_transmission+=1
+        self.index_transmission += 1
         try:
-            return self.fragments[self.index_transmission-1]
-        except:
+            return self.fragments[self.index_transmission - 1]
+        except IndexError:
             return False
-        
-# Instead of grid selection, we consider one grid of obw (usually 35 for EU) channels, as it is faster to simulate and extrapolate the number.
-# Later we can implement the grid selection in case of interest of studying it.
-#    def new_channels(self, obw, fragments):
-#        self.channels = random.sample(range(obw), fragments)
 
 
 class Traffic(ABC):
@@ -72,6 +67,7 @@ class Node():
         self.headers = headers
         self.payloads = payloads
         self.threshold = threshold
+        self.tx_config_log = []  # list of (headers, code) per transmitted packet
         
         self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
 
@@ -118,65 +114,51 @@ class Node():
         self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
 
     def transmit(self, env, bs):
-        while 1:
-            # Get next transmission time
+        while True:
             wait_time = self.next_transmission()
-            # Wait for that time
             yield env.timeout(wait_time)
 
-            # For semantic traffic, evaluate process evolution and decision
-            # at the actual decision epoch.
             if hasattr(self.traffic_generator, 'on_decision_epoch'):
                 self.traffic_generator.on_decision_epoch(wait_time)
-            
-            # SEMANTIC FILTER: Check if traffic generator approves transmission now
-            # If not semantic traffic, should_send_now() doesn't exist, so always transmit
+
             if hasattr(self.traffic_generator, 'should_send_now'):
                 if not self.traffic_generator.should_send_now():
-                    # Semantic says "don't transmit" - skip this transmission cycle
-                    # Continue to next iteration (another λ period)
                     continue
-            
-            # Approved for transmission (or not semantic traffic)
+
             self.transmitted += 1
-
-            # Semantic mode may adapt headers/CR per packet from current distortion.
             self._apply_semantic_tx_config()
-
-            # Track actual transmission airtime for energy-efficiency metrics.
             self.tx_airtime += self.headers * self.header_duration + self.payloads * self.payload_duration
 
-            # Create fresh packet for this transmission
-            self.packet = Packet(self.id, self.obw, self.headers, self.payloads, self.header_duration, self.payload_duration, self.threshold)
+            # Log the configuration used for this packet
+            cfg = self.traffic_generator.get_tx_params() if hasattr(self.traffic_generator, 'get_tx_params') else None
+            code_used = cfg.get('code', None) if cfg else None
+            self.tx_config_log.append((self.headers, code_used))
+
+            self.packet = Packet(
+                self.id, self.obw, self.headers, self.payloads,
+                self.header_duration, self.payload_duration, self.threshold
+            )
             bs.add_packet(self.packet)
             next_fragment = self.packet.next()
             first_payload = 0
             self.initial_timestamp.append(env.now)
 
             while next_fragment:
-                if first_payload == 0 and next_fragment.type=='payload': #account for the transceiver wait time between the last header and first payload fragment
-                    first_payload=1
+                if first_payload == 0 and next_fragment.type == 'payload':
+                    first_payload = 1
                     yield env.timeout(self.transceiver_wait)
                 next_fragment.timestamp = env.now
-                #checks if the fragment is colliding with the fragments in transmission now
                 bs.check_collision(next_fragment)
-                #add the fragment to the list of fragments being transmitted.
                 bs.receive_packet(next_fragment)
-                #wait the duration (time on air) of the fragment
                 yield env.timeout(next_fragment.duration)
-                #removes the fragment from the list.
                 bs.finish_fragment(next_fragment)
-                #check if base can decode the packet now.
-                #tries to decode if not decoded yet.
                 if self.packet.success == 0:
-                    bs.try_decode(self, self.packet,env.now)
-                #select the next fragment
+                    bs.try_decode(self, self.packet, env.now)
                 next_fragment = self.packet.next()
-            
+
             if self.packet.success == 0:
                 self.final_timestamp.append(0)
 
-            #end of transmission procedure
             self.end_of_transmission()
 
 class Base():
@@ -203,20 +185,25 @@ class Base():
             fragment.success = 1
         fragment.transmitted = 1
 
-    def check_collision(self,fragment):
+    def check_collision(self, fragment):
         for f in self.transmitting[fragment.channel]:
             f.collided.append(fragment)
             fragment.collided.append(f)
 
-    def try_decode(self,node,packet,now):
-        h_success = sum( ((len(f.collided)==0) and f.transmitted==1) if (f.type=='header') else 0 for f in packet.fragments)
-        p_success = sum( ((len(f.collided)==0) and f.transmitted==1) if (f.type=='payload') else 0 for f in packet.fragments)
+    def try_decode(self, node, packet, now):
+        h_success = sum(
+            1 if ((len(f.collided) == 0) and f.transmitted == 1 and f.type == 'header') else 0
+            for f in packet.fragments
+        )
+        p_success = sum(
+            1 if ((len(f.collided) == 0) and f.transmitted == 1 and f.type == 'payload') else 0
+            for f in packet.fragments
+        )
         required_payloads = packet.threshold if packet.threshold is not None else self.threshold
-        success = 1 if ((h_success>0) and (p_success >= required_payloads)) else 0
+        success = 1 if ((h_success > 0) and (p_success >= required_payloads)) else 0
         if success == 1:
             self.packets_received[packet.node_id] += 1
             packet.success = 1
             node.final_timestamp.append(now)
             return True
-        else:
-            return False
+        return False

@@ -59,6 +59,18 @@ def _run_sim_internal(settings: Settings, seed=0):
                 distortions.append(float(d))
     mean_semantic_distortion = float(np.mean(distortions)) if distortions else float('nan')
 
+    # Collect per-setup usage statistics (semantic config distribution)
+    from collections import Counter
+    setup_counter = Counter()
+    for node in nodes:
+        for h, code in node.tx_config_log:
+            setup_counter[(h, code)] += 1
+    total_configs = sum(setup_counter.values())
+    setup_usage = {
+        f'h={h}_cr={code}': {'count': cnt, 'pct': 100.0 * cnt / total_configs if total_configs > 0 else 0.0}
+        for (h, code), cnt in sorted(setup_counter.items(), key=lambda x: -x[1])
+    }
+
     if transmitted == 0:
         summary = [[1.0], [0], [0], [mean_aoi], [0.0]]
         return {
@@ -70,6 +82,7 @@ def _run_sim_internal(settings: Settings, seed=0):
             'total_tx_airtime': 0.0,
             'mean_semantic_distortion': mean_semantic_distortion,
             'success_count': int(success),
+            'setup_usage': setup_usage,
         }
 
     success_ratio = success / transmitted
@@ -90,6 +103,7 @@ def _run_sim_internal(settings: Settings, seed=0):
         'total_tx_airtime': float(total_tx_airtime),
         'mean_semantic_distortion': mean_semantic_distortion,
         'success_count': int(success),
+        'setup_usage': setup_usage,
     }
 
     #Get the average success per device, used to plot the CDF 

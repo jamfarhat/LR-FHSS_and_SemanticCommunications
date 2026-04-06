@@ -3,78 +3,60 @@ import numpy as np
 from lrfhss.lrfhss_core import Traffic
 import warnings
 
+# Optional — imported lazily to avoid circular imports in simple use cases.
+_AR1Process = None
 
-## Exponential traffic
+def _get_ar1_class():
+    global _AR1Process
+    if _AR1Process is None:
+        from lrfhss.ar1_process import AR1Process
+        _AR1Process = AR1Process
+    return _AR1Process
+
+
 class Exponential_Traffic(Traffic):
+    """Exponential inter-arrival traffic."""
     def __init__(self, traffic_param):
         super().__init__(traffic_param)
-        if not 'average_interval' in self.traffic_param:
-            warnings.warn(f'traffic_param average_interval key missing for Exponential_Traffic. Using with average_interval=900 as default')
+        if 'average_interval' not in self.traffic_param:
+            warnings.warn('Exponential_Traffic: average_interval missing. Using default 900s')
             self.traffic_param['average_interval'] = 900
 
     def traffic_function(self):
-        return random.expovariate(1/self.traffic_param['average_interval'])
+        return random.expovariate(1 / self.traffic_param['average_interval'])
 
-## Uniform traffic
+
 class Uniform_Traffic(Traffic):
+    """Uniform inter-arrival traffic."""
     def __init__(self, traffic_param):
         super().__init__(traffic_param)
-        if not 'max_interval' in self.traffic_param:
-            warnings.warn(f'traffic_param max_interval key missing for Uniform_Traffic. Using with max_interval=1800 as default')
+        if 'max_interval' not in self.traffic_param:
+            warnings.warn('Uniform_Traffic: max_interval missing. Using default 1800s')
             self.traffic_param['max_interval'] = 1800
 
     def traffic_function(self):
-        return random.uniform(0,self.traffic_param['max_interval'])
+        return random.uniform(0, self.traffic_param['max_interval'])
 
-## Constant traffic with small gaussian deviation
+
 class Constant_Traffic(Traffic):
+    """Constant inter-arrival traffic with Gaussian deviation."""
     def __init__(self, traffic_param):
         super().__init__(traffic_param)
-        if not 'constant_interval' in self.traffic_param:
-            warnings.warn(f'traffic_param constant_interval key missing for Constant_Traffic. Using with constant_interval=900 as default')
+        if 'constant_interval' not in self.traffic_param:
+            warnings.warn('Constant_Traffic: constant_interval missing. Using default 900s')
             self.traffic_param['constant_interval'] = 900
-
-        if not 'standard_deviation' in self.traffic_param:
-            warnings.warn(f'traffic_param standard_deviation key missing for Constant_Traffic. Using with standard_deviation=900 as default')
+        if 'standard_deviation' not in self.traffic_param:
+            warnings.warn('Constant_Traffic: standard_deviation missing. Using default 10')
             self.traffic_param['standard_deviation'] = 10
 
     def traffic_function(self):
-        # First transmissions is random, devices are not initiated at the same time
         if self.transmitted == 0:
-            return random.uniform(0,2*self.traffic_param['constant_interval'])
-        else:
-            return max(0, self.traffic_param['constant_interval'] + random.gauss(0,self.traffic_param['standard_deviation']))
-    
-
-## 2-state Markovian Traffic
-class Two_State_Markovian_Traffic(Traffic):
-    def __init__(self, traffic_param):
-        super().__init__(traffic_param)
-        if not 'transition_matrix' in self.traffic_param:
-            warnings.warn(f'traffic_param transition_matrix key missing for Two_State_Markovian_Traffic. Using transition_matrix=[0.5, 0.5; 0.5, 0.5] as default')
-            self.traffic_param['transition_matrix'] = [[0.5, 0.5],[0.5, 0.5]]
-        
-        if not 'markov_time' in self.traffic_param:
-            warnings.warn(f'traffic_param markov_time key missing for Two_State_Markovian_Traffic. Using markov_time=0.5 as default')
-            self.traffic_param['markov_time'] = 0.5
-
-    def traffic_function(self):
-        discrete_time = 1
-        try:
-            state = self.state
-        except AttributeError:
-            state = 0
-
-        if random.random() >= self.traffic_param['transition_matrix'][state][0]:
-            return max(0,discrete_time * self.traffic_param['markov_time'] + random.gauss(0,1))
-
-        discrete_time+=1
-        transition_probability = self.traffic_param['transition_matrix'][0][0]
-        while random.random() < transition_probability:
-            discrete_time+=1
-        
-        self.state=1
-        return max(0,discrete_time * self.traffic_param['markov_time'] + random.gauss(0,1))
+            return random.uniform(0, 2 * self.traffic_param['constant_interval'])
+        return max(
+            0,
+            self.traffic_param['constant_interval']
+            + random.gauss(0, self.traffic_param['standard_deviation'])
+        )
 
 
 class DistortionAwareExponentialTraffic(Traffic):
@@ -95,8 +77,12 @@ class DistortionAwareExponentialTraffic(Traffic):
         self.lambda_interval = self.traffic_param['average_interval']
         self.alpha = self.traffic_param.get('alpha', 0.95)
         self.sigma_w = self.traffic_param.get('sigma_w', 1.0)
-
         self.track_trace = bool(self.traffic_param.get('track_trace', False))
+
+        # Optional pre-generated AR(1) process (shared across protocols).
+        # If provided, x_current is obtained via process.query(t) instead of
+        # the internal incremental update.
+        self._ar1_process = traffic_param.get('ar1_process', None)
 
         self.x_current = np.random.normal(0, self.sigma_w)
         self.x_last_tx = np.random.normal(0, self.sigma_w)
@@ -111,6 +97,10 @@ class DistortionAwareExponentialTraffic(Traffic):
         return random.expovariate(1 / self.lambda_interval)
 
     def update_ar1(self, dt):
+        if self._ar1_process is not None:
+            # Use pre-generated process — just advance the clock and query.
+            self.x_current = self._ar1_process.query(self._time)
+            return
         if self.lambda_interval <= 0:
             dt_ratio = 1.0
         else:
@@ -132,14 +122,17 @@ class DistortionAwareExponentialTraffic(Traffic):
         self._decision_count += 1
 
         # Traditional policy always transmits at each scheduled epoch.
+        x_last_before_tx = self.x_last_tx
         self.x_last_tx = self.x_current
         self.aoi_local = 0.0
 
         if self.track_trace:
             self._trace.append({
-                'time': self._time,
-                'distortion': distortion,
-                'threshold': np.nan,
+                'time':        self._time,
+                'x_current':   float(self.x_current),
+                'x_hat':       float(x_last_before_tx),
+                'distortion':  distortion,
+                'threshold':   np.nan,
                 'tx_decision': True,
             })
 
@@ -222,6 +215,9 @@ class SemanticTraffic(Traffic):
         self.lambda_interval = traffic_param['average_interval']
         self.track_trace = bool(traffic_param.get('track_trace', False))
 
+        # Optional pre-generated AR(1) process (shared across protocols).
+        self._ar1_process = traffic_param.get('ar1_process', None)
+
         # Optional semantic-to-robustness mapping.
         # Each entry is ordered by increasing max_distortion and may specify
         # headers and code. Example:
@@ -265,7 +261,10 @@ class SemanticTraffic(Traffic):
     
     def update_ar1(self, dt):
         """Evolve AR(1) process over elapsed time dt."""
-        # Use dt-scaled equivalent step to keep dynamics tied to real epoch spacing.
+        if self._ar1_process is not None:
+            self.x_current = self._ar1_process.query(self._time)
+            return
+        # Internal incremental update (backward-compatible).
         if self.lambda_interval <= 0:
             dt_ratio = 1.0
         else:
@@ -337,9 +336,11 @@ class SemanticTraffic(Traffic):
 
         if self.track_trace:
             self._trace.append({
-                'time': self._time,
-                'distortion': distortion,
-                'threshold': threshold,
+                'time':        self._time,
+                'x_current':   float(self.x_current),
+                'x_hat':       float(self.x_last_tx),
+                'distortion':  distortion,
+                'threshold':   threshold,
                 'tx_decision': self._last_tx_decision,
             })
 
