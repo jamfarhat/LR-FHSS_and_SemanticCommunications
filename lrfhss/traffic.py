@@ -391,9 +391,9 @@ class PrecomputedSemanticTraffic(Traffic):
         )
 
         default_configs = [
-            {'max_distortion': self.epsilon_0,          'headers': 1, 'code': '5/6'},
-            {'max_distortion': 2.0 * self.epsilon_0,    'headers': 2, 'code': '2/3'},
-            {'max_distortion': float('inf'),            'headers': 3, 'code': '1/3'},
+            {'max_distortion': 0.68 * self.epsilon_0,  'headers': 1, 'code': '5/6'},   # AoI-driven low-distortion crossing
+            {'max_distortion': 0.88 * self.epsilon_0,  'headers': 2, 'code': '2/3'},   # normal crossing
+            {'max_distortion': float('inf'),           'headers': 3, 'code': '1/3'},   # high-distortion crossing
         ]
         self.semantic_configs = sorted(
             traffic_param.get('semantic_configs', default_configs),

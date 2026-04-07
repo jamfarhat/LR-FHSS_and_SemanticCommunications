@@ -18,11 +18,11 @@ def get_semantic_params() -> dict:
         {
             'epsilon_0': 1.25,
             'epsilon_min': 0.20,
-            'beta': 0.00002,
+            'beta': 0.001,
             'semantic_configs': [
-                {'max_distortion': 1.25, 'headers': 1, 'code': '5/6'},
-                {'max_distortion': 2.75, 'headers': 2, 'code': '2/3'},
-                {'max_distortion': float('inf'), 'headers': 3, 'code': '1/2'},
+                {'max_distortion': 0.85, 'headers': 1, 'code': '5/6'},   # low-distortion crossing (AoI-driven, threshold decayed)
+                {'max_distortion': 1.10, 'headers': 2, 'code': '2/3'},   # normal threshold crossing
+                {'max_distortion': float('inf'), 'headers': 3, 'code': '1/2'},  # high-distortion crossing, need reliability
             ],
         }
     )

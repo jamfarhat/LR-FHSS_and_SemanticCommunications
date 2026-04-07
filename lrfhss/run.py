@@ -14,6 +14,54 @@ def run_sim_detailed(settings: Settings, seed=0):
     return _run_sim_internal(settings, seed=seed)
 
 
+def _compute_realistic_distortion(node, sim_time: float) -> float:
+    """
+    Gateway-side distortion: mean |x(t_j) - x̂_gw(t_j)| at TX instants,
+    where x̂_gw updates only on successful packet reception (not on every TX).
+
+    For traffic with a pre-generated AR(1) process (PrecomputedSemanticTraffic):
+    uses the full signal for exact x values at each TX instant.
+    For other traffic with track_trace=True: uses stored trace values.
+    """
+    tg = node.traffic_generator
+    n_txs = len(node.initial_timestamp)
+    n_final = len(node.final_timestamp)
+    n = min(n_txs, n_final)  # packets in-flight at sim end lack a final_timestamp entry
+    if n == 0:
+        return float('nan')
+
+    # Full-signal approach (PrecomputedSemanticTraffic)
+    ar1 = getattr(tg, '_ar1_process', None)
+    if ar1 is not None:
+        t_arr = ar1.t_array
+        x_arr = ar1.x_array
+        x_hat_gw = float(x_arr[0])
+        acc = []
+        for j in range(n):
+            x_tx = float(np.interp(node.initial_timestamp[j], t_arr, x_arr))
+            acc.append(abs(x_tx - x_hat_gw))
+            if node.final_timestamp[j] != 0:
+                x_hat_gw = x_tx
+        return float(np.mean(acc))
+
+    # Trace-based fallback (requires track_trace=True in traffic params)
+    if not hasattr(tg, 'get_trace'):
+        return float('nan')
+    trace = tg.get_trace()
+    tx_trace = [e for e in trace if e.get('tx_decision', True)]
+    n = min(len(tx_trace), n)  # n already accounts for final_timestamp length
+    if n == 0:
+        return float('nan')
+    x_hat_gw = float(tx_trace[0].get('x_hat', 0.0))
+    acc = []
+    for j in range(n):
+        x_tx = float(tx_trace[j]['x_current'])
+        acc.append(abs(x_tx - x_hat_gw))
+        if node.final_timestamp[j] != 0:
+            x_hat_gw = x_tx
+    return float(np.mean(acc)) if acc else float('nan')
+
+
 def _run_sim_internal(settings: Settings, seed=0):
     random.seed(seed)
     np.random.seed(seed)
@@ -69,6 +117,13 @@ def _run_sim_internal(settings: Settings, seed=0):
                 distortions.append(float(d))
     mean_semantic_distortion = float(np.mean(distortions)) if distortions else float('nan')
 
+    realistic_distortions = []
+    for node in nodes:
+        d = _compute_realistic_distortion(node, float(settings.simulation_time))
+        if not np.isnan(d):
+            realistic_distortions.append(d)
+    mean_realistic_distortion = float(np.mean(realistic_distortions)) if realistic_distortions else float('nan')
+
     # Collect per-setup usage statistics (semantic config distribution)
     from collections import Counter
     setup_counter = Counter()
@@ -91,6 +146,7 @@ def _run_sim_internal(settings: Settings, seed=0):
             'mean_aoi': float(mean_aoi),
             'total_tx_airtime': 0.0,
             'mean_semantic_distortion': mean_semantic_distortion,
+            'mean_realistic_distortion': mean_realistic_distortion,
             'success_count': int(success),
             'setup_usage': setup_usage,
         }
@@ -112,6 +168,7 @@ def _run_sim_internal(settings: Settings, seed=0):
         'mean_aoi': float(mean_aoi),
         'total_tx_airtime': float(total_tx_airtime),
         'mean_semantic_distortion': mean_semantic_distortion,
+        'mean_realistic_distortion': mean_realistic_distortion,
         'success_count': int(success),
         'setup_usage': setup_usage,
     }

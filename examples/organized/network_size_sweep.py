@@ -55,6 +55,7 @@ TX_POWER_W = 0.1
 
 def _build_protocols() -> dict:
     base_traffic_params = get_base_traffic_params()
+    base_traffic_params = dict(base_traffic_params, track_trace=True)  # needed for realistic distortion
     semantic_params = get_semantic_params()
     return {
         'DR8': {
@@ -107,6 +108,7 @@ def _run_single_case(num_devices: int, protocol: str, cfg: dict, seed: int, sim_
         settings_kwargs['headers'] = cfg['headers']
 
     details = run_sim_detailed(Settings(**settings_kwargs), seed=seed)
+    su = details.get('setup_usage', {})
     return {
         'devices': num_devices,
         'nodes_simulated': num_nodes,
@@ -115,12 +117,16 @@ def _run_single_case(num_devices: int, protocol: str, cfg: dict, seed: int, sim_
         'success_probability': details['success_ratio'],
         'mean_aoi_s': details['mean_aoi'],
         'mean_semantic_distortion': details['mean_semantic_distortion'],
+        'mean_realistic_distortion': details.get('mean_realistic_distortion', float('nan')),
         'energy_efficiency_bits_per_j': _energy_efficiency(
             details['goodput_bits'], details['total_tx_airtime']
         ),
         'goodput_bits': details['goodput_bits'],
         'total_tx_airtime_s': details['total_tx_airtime'],
         'transmitted_packets': details['transmitted'],
+        'setup_h1_5_6_pct': su.get('h=1_cr=5/6', {}).get('pct', 0.0),
+        'setup_h2_2_3_pct': su.get('h=2_cr=2/3', {}).get('pct', 0.0),
+        'setup_h3_1_2_pct': su.get('h=3_cr=1/2', {}).get('pct', 0.0),
     }
 
 
@@ -157,9 +163,14 @@ def run_experiment(sim_time: int, seeds: list[int], node_counts: list[int], n_jo
             mean_aoi_s_std=('mean_aoi_s', 'std'),
             mean_semantic_distortion=('mean_semantic_distortion', 'mean'),
             mean_semantic_distortion_std=('mean_semantic_distortion', 'std'),
+            mean_realistic_distortion=('mean_realistic_distortion', 'mean'),
+            mean_realistic_distortion_std=('mean_realistic_distortion', 'std'),
             energy_efficiency_bits_per_j=('energy_efficiency_bits_per_j', 'mean'),
             energy_efficiency_bits_per_j_std=('energy_efficiency_bits_per_j', 'std'),
             goodput_bits=('goodput_bits', 'mean'),
+            setup_h1_5_6_pct=('setup_h1_5_6_pct', 'mean'),
+            setup_h2_2_3_pct=('setup_h2_2_3_pct', 'mean'),
+            setup_h3_1_2_pct=('setup_h3_1_2_pct', 'mean'),
         )
         .sort_values(['devices', 'protocol'])
         .fillna(0.0)
@@ -208,13 +219,50 @@ def _plot_single_metric(summary_df: pd.DataFrame, output_dir: str,
 def plot_results(summary_df: pd.DataFrame, output_dir: str) -> None:
     """Generate one standalone figure per metric."""
     metrics = [
-        ('mean_aoi_s',                    'Average Age of Information (s)',  'aoi_vs_devices'),
-        ('mean_semantic_distortion',      'Mean Semantic Distortion',       'distortion_vs_devices'),
-        ('energy_efficiency_bits_per_j',  'Energy Efficiency (bits/J)',     'ee_vs_devices'),
-        ('success_probability',           'Success Probability',            'success_prob_vs_devices'),
+        ('mean_aoi_s',                    'Average Age of Information (s)',     'aoi_vs_devices'),
+        ('mean_semantic_distortion',      'Mean Distortion (Optimistic)',        'distortion_vs_devices'),
+        ('mean_realistic_distortion',     'Mean Distortion (Gateway-Side)',      'realistic_distortion_vs_devices'),
+        ('energy_efficiency_bits_per_j',  'Energy Efficiency (bits/J)',          'ee_vs_devices'),
+        ('success_probability',           'Success Probability',                 'success_prob_vs_devices'),
     ]
     for metric, ylabel, filename in metrics:
         _plot_single_metric(summary_df, output_dir, metric, ylabel, filename)
+
+
+def plot_semantic_setup_usage(summary_df: pd.DataFrame, output_dir: str) -> None:
+    """Stacked bar: % of each TX config used by Semantic vs number of devices."""
+    sem_df = summary_df[summary_df['protocol'] == 'Semantic'].sort_values('devices')
+    if sem_df.empty:
+        return
+
+    configs = [
+        ('setup_h1_5_6_pct', 'h=1, CR=5/6 (Light)',  '#4CAF50'),
+        ('setup_h2_2_3_pct', 'h=2, CR=2/3 (Medium)', '#FF9800'),
+        ('setup_h3_1_2_pct', 'h=3, CR=1/2 (Robust)', '#F44336'),
+    ]
+    configs = [(col, lbl, clr) for col, lbl, clr in configs if col in sem_df.columns]
+    if not configs:
+        return
+
+    devices = sem_df['devices'].to_numpy()
+    x = np.arange(len(devices))
+    width = 0.6
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    bottom = np.zeros(len(devices))
+    for col, label, color in configs:
+        vals = sem_df[col].to_numpy(dtype=float)
+        ax.bar(x, vals, width, bottom=bottom, label=label, color=color, alpha=0.85)
+        bottom += vals
+
+    ax.set_xlabel('Number of Devices')
+    ax.set_ylabel('TX Setup Usage (%)')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{int(d / 1000)}K' for d in devices], rotation=30)
+    ax.set_ylim(0, 110)
+    ax.legend(loc='upper right')
+    fig.tight_layout()
+    save_fig(fig, output_dir, 'semantic_setup_usage')
 
 
 def plot_tradeoff_aoi_vs_energy(summary_df: pd.DataFrame, output_dir: str) -> None:
@@ -277,6 +325,7 @@ def main():
     _, summary_df, output_dir = run_experiment(sim_time=sim_time, seeds=seeds, node_counts=node_counts, n_jobs=args.jobs)
     plot_results(summary_df, output_dir)
     plot_tradeoff_aoi_vs_energy(summary_df, output_dir)
+    plot_semantic_setup_usage(summary_df, output_dir)
 
     print('=' * 80)
     print('[DONE] Simulation finished.')

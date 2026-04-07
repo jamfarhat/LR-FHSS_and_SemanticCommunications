@@ -1,0 +1,281 @@
+\documentclass[lettersize,journal]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{acronym}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{amssymb}
+\usepackage{hyperref}
+
+\begin{document}
+
+\input{acronyms}
+\title{Feedback-Free Semantic Transmission Scheduling for AoII Optimization in LR-FHSS}
+
+%\author{Jamil~Farhat, Guilherme Luiz Moritz, Glauber Brante, João~Luiz~Rebelatto and Richard Demo Souza
+%\thanks{J. Farhat, G. L. Moritz, G. Brante and J. L. Rebelatto are with the Federal University of Technology - Paraná (UTFPR), Curitiba, PR 80230-901, Brazil. E-mails: \{jamilfarhat, moritz, gbrante, jlrebelatto\}@utfpr.edu.br. R. D. Souza is with the Federal University of Santa Catarina, Brazil. E-mail: richard.demo@ufsc.br.}}
+
+\maketitle
+
+\begin{abstract}
+This work studies a fully distributed, feedback-free medium access protocol for \ac{LR-FHSS} networks that jointly optimizes \ac{AoII} and energy efficiency. Two coupled mechanisms are proposed: a semantics-driven transmission policy, in which each device estimates the gateway's belief about its own state and transmits only when the estimation error exceeds a configurable threshold; and an adaptive resource-allocation scheme, in which the number of \ac{LR-FHSS} header replicas and the coding rate are dynamically adjusted as a function of the local \ac{AoII}. Both mechanisms operate without any network feedback and share a single local state variable.
+\end{abstract}
+
+\begin{IEEEkeywords}
+LR-FHSS, Age of Incorrect Information, Semantic Communications, Energy Efficiency, Internet of Things, LoRaWAN.
+\end{IEEEkeywords}
+
+% -------------------------------------------------------
+\section{Preliminaries}
+\label{sec:preliminaries}
+
+%----------------------------
+\subsection{LR-FHSS Overview}
+\label{subsec:lrfhss}
+
+\ac{LR-FHSS} is a modulation technique recently incorporated into the LoRaWAN specification, primarily designed to increase uplink capacity in dense networks served by a single gateway, such as direct-to-satellite \ac{IoT} deployments. The total available bandwidth is divided into frequency grids, each subdivided into $c$ channels, with pseudo-random frequency hops occurring across channels within the same grid at each symbol period.
+
+A \ac{LR-FHSS} packet transmission consists of two stages. First, $h$ replicas of the packet header are transmitted on distinct channels to provide robustness against collisions. Second, the payload is encoded with a convolutional code of rate $\mathrm{CR}$ and split into
+\begin{equation}
+  f = \left\lceil \frac{l + 3}{6\,\mathrm{CR}} \right\rceil
+  \label{eq:fragments}
+\end{equation}
+fragments, which are transmitted sequentially over distinct channels, where $l$ is the payload size in bytes. The Time-on-Air (ToA) of each header replica is $t_h = 233.472$~ms, and the ToA of each payload fragment is $t_f = 102.4$~ms.
+
+A fundamental characteristic of \ac{LR-FHSS} is the absence of a practical downlink channel, particularly in massive \ac{IoT} deployments. Consequently, devices cannot confirm whether transmitted packets reached the gateway, which motivates the feedback-free protocol design proposed in this work.
+
+%----------------------------
+\subsection{Age of Information}
+\label{subsec:aoi}
+
+The \ac{AoI} quantifies the freshness of the information held by the gateway regarding the current state of a device. The instantaneous \ac{AoI} of device~$k$ at time~$t$ is defined as
+\begin{equation}
+  \Delta_k(t) = t - t_n^\star,
+  \label{eq:aoi_inst}
+\end{equation}
+where $t_n^\star$ is the generation timestamp of the most recent packet from device~$k$ successfully decoded by the gateway. The \ac{AoI} grows linearly between successful receptions and resets upon each new successful decoding event.
+
+The time-average \ac{AoI} is defined as
+\begin{equation}
+  \bar{\Delta}_k = \lim_{T \to \infty} \frac{1}{T}
+    \int_0^T \Delta_k(t)\, \mathrm{d}t.
+  \label{eq:aoi_avg}
+\end{equation}
+
+For ergodic and stationary processes,~\eqref{eq:aoi_avg} can be computed via the geometric decomposition method, which expresses the average \ac{AoI} as the ratio of the expected trapezoidal area formed between consecutive successful receptions to the expected inter-reception interval:
+\begin{equation}
+  \bar{\Delta}_k = \lim_{N \to \infty}
+    \frac{\sum_{n=1}^{N} Q_n}{\sum_{n=1}^{N} Y_n},
+  \label{eq:aoi_geometric}
+\end{equation}
+where $Y_n = t_n' - t_{n-1}'$ is the $n$-th inter-reception interval and $Q_n$ is the trapezoidal area associated with the $n$-th update:
+\begin{equation}
+  Q_n = Y_n \left(t_{n-1}' - t_{n-1}^\star\right) + \frac{Y_n^2}{2}.
+  \label{eq:Qn}
+\end{equation}
+
+%----------------------------
+\subsection{Age of Incorrect Information and Semantic Distortion}
+\label{subsec:aoii}
+
+While \ac{AoI} measures the elapsed time since the last successful update, it does not distinguish between updates that reflect meaningful changes in the physical process and those carrying redundant information. The \ac{AoII}~\cite{Munari.2024} addresses this limitation by penalizing the system only when the receiver holds an inaccurate belief about the monitored process, thus making the freshness metric semantically aware.
+
+In this work, \ac{AoII} is operationalized through a local semantic distortion metric: each device computes the deviation between its current reading and its estimate of the gateway's belief, and uses it as a trigger for transmission.
+
+% -------------------------------------------------------
+\section{System Model}
+\label{sec:model}
+
+We consider a \ac{LR-FHSS} network of $K$ \ac{IoT} devices that independently monitor distinct physical processes and transmit packets to a single gateway over $c$ channels per frequency grid. Decoding errors are assumed to arise exclusively from packet collisions, which is a valid approximation when all devices lie within the gateway's coverage area and inter-packet interference is the dominant impairment.
+
+%----------------------------
+\subsection{Process Model and Local Estimation}
+\label{subsec:process}
+
+The physical process of device~$k$ is modeled as a first-order autoregressive (AR(1)) process:
+\begin{equation}
+  x_k(t) = \alpha_k\, x_k(t-1) + w_{k,t},
+  \label{eq:ar1}
+\end{equation}
+where $\alpha_k \in (0,1)$ is the autocorrelation coefficient and $w_{k,t} \sim \mathcal{N}(0, \sigma_{w,k}^2)$ is additive white Gaussian noise, both of which may differ across devices. This model is widely adopted for \ac{IoT} sensing applications such as environmental monitoring and industrial telemetry~\cite{Wang.2025}. The coefficient $\alpha_k$ characterizes process dynamics: values close to unity describe slowly varying processes (e.g., ambient temperature), while low values correspond to rapidly changing ones.
+
+Since no downlink channel is available, the gateway cannot inform device~$k$ of its current estimate. However, because the device and the gateway share knowledge of the process model and its parameters, device~$k$ can locally replicate the estimate the gateway is likely holding. Under the optimistic assumption that the last transmission was successfully decoded, the device's proxy for the gateway's belief is
+\begin{equation}
+  \hat{x}_k(t) = x_k\!\left(t - \Delta_k^{\mathrm{loc}}(t)\right),
+  \label{eq:gateway_est}
+\end{equation}
+where $\Delta_k^{\mathrm{loc}}(t)$ is the \emph{local \ac{AoI}}, defined as the time elapsed since device~$k$'s last transmission attempt. In the absence of feedback, $\Delta_k^{\mathrm{loc}}(t)$ is a lower bound on the true \ac{AoI} $\Delta_k(t)$ at the gateway: the gateway's state is at least as stale as the device believes.
+
+%----------------------------
+\subsection{Semantic Distortion}
+\label{subsec:distortion}
+
+The estimated semantic distortion, representing the device's local perception of the informational gap between its current observation and the gateway's estimate, is
+\begin{equation}
+  \hat{D}_k(t) = \left|x_k(t) - \hat{x}_k(t)\right|
+           = \left|x_k(t) - x_k\!\left(t - \Delta_k^{\mathrm{loc}}(t)\right)\right|.
+  \label{eq:distortion}
+\end{equation}
+Since $\hat{x}_k(t)$ is an optimistic proxy for the gateway's belief, $\hat{D}_k(t)$ serves as a lower bound on the true instantaneous \ac{AoII} at the gateway. For the AR(1) process in~\eqref{eq:ar1}, the expected value of $\hat{D}_k(t)$ increases monotonically with $\Delta_k^{\mathrm{loc}}(t)$, as the process progressively diverges from its last known value.
+
+%----------------------------
+\subsection{Collision and Success Probability Model}
+\label{subsec:collision}
+
+The effective duty cycle of device~$k$ under the semantic policy is
+\begin{equation}
+  \delta_{\mathrm{eff}} = \lambda_{\mathrm{eff}}\,
+    \mathbb{E}\!\left[t_{\mathrm{pkt}}\right],
+  \label{eq:duty_cycle}
+\end{equation}
+where $\mathbb{E}[t_{\mathrm{pkt}}] = \mathbb{E}[h_k]\,t_h + \mathbb{E}[f_k]\,t_f$ is the mean packet duration. A key advantage of semantics-driven transmission is that devices remain silent when the process variation falls below the distortion threshold, naturally reducing $\delta_{\mathrm{eff}}$ compared to fixed-rate policies.
+
+The overall packet success probability is
+\begin{equation}
+    P_s = P_h \cdot P_\mu.
+    \label{eq:ps}
+\end{equation}
+The header success probability, i.e., the probability that at least one of the $h$ replicas is received without collision, is
+\begin{equation}
+  P_h = 1 - \left[1 - \left(1 - \frac{1}{c}\right)^{A_h - 1}\right]^h,
+  \label{eq:ph}
+\end{equation}
+where the aggregate header activity $A_h$ accounts for the expected number of concurrently active transmissions during a header slot:
+\begin{equation}
+  A_h = \max\!\left(1,\; 2\lambda_h t_h + \lambda_f (t_h + t_f)\right),
+  \label{eq:ah}
+\end{equation}
+with $\lambda_h = h\,\lambda_{\mathrm{eff}}\,K$ and $\lambda_f = f\,\lambda_{\mathrm{eff}}\,K$ being the aggregate header and fragment transmission rates, respectively.
+
+The payload success probability accounts for successful recovery of at least $\mu$ out of $f$ fragments:
+\begin{equation}
+  P_\mu = 1 - \sum_{i=0}^{\mu-1} \binom{f}{i} P_f^{\,i}\, (1 - P_f)^{f-i},
+  \label{eq:pmu}
+\end{equation}
+where $\mu = \lceil f \cdot \mathrm{CR} \rceil$ is the minimum number of fragments required for successful decoding and the per-fragment success probability is
+\begin{equation}
+  P_f = \left(1 - \frac{1}{c}\right)^{A_f - 1},
+  \label{eq:pf}
+\end{equation}
+with $A_f = \max\!\left(1,\; 2\lambda_f t_f + \lambda_h(t_h + t_f)\right)$.
+
+\subsection{Energy Efficiency}
+\label{subsec:energy}
+
+In battery-powered \ac{IoT} devices, energy consumption is dominated by radio transmission. The energy consumed per transmitted packet with $h$ header replicas is
+\begin{equation}
+  E_{\mathrm{pkt}}(h) = \left(h\, t_h + f\, t_f\right) P_{\mathrm{tx}},
+  \label{eq:energy_pkt}
+\end{equation}
+where $P_{\mathrm{tx}}$ is the (constant) transmit power and $f$ is given by~\eqref{eq:fragments}.
+
+The network-level energy efficiency, measured in bits delivered per joule consumed, is
+\begin{equation}
+  \eta_{\mathrm{bit}}
+  = \frac{\mathcal{G}}{K\,\lambda_{\mathrm{eff}}\,E_{\mathrm{pkt}}}
+  = \frac{P_s\, l}{E_{\mathrm{pkt}}}
+  \quad [\text{bits/J}],
+  \label{eq:eta_bit}
+\end{equation}
+where $\mathcal{G} = P_s, K, \lambda_{\mathrm{eff}}, l$ denotes the network goodput [bits/s]. Here, $\lambda_{\mathrm{eff}}$ is the effective per-device transmission rate induced by the semantic policy, and $l$ denotes the payload size in bits.
+
+% -------------------------------------------------------
+\section{Proposed Protocol}
+\label{sec:protocol}
+
+We propose a unified, feedback-free transmission policy that jointly controls the transmission decision, the number of header replicas $h$, and the coding rate $\mathrm{CR}$, based on the estimated semantic distortion $\hat{D}_k(t)$ and the local \ac{AoI} $\Delta_k^{\mathrm{loc}}(t)$. The key insight is that both the transmission timing and the resource allocation should be governed by the informational value of the update, as captured by $\hat{D}_k(t)$ and $\Delta_k^{\mathrm{loc}}(t)$, rather than by fixed schedules or explicit gateway feedback. This semantic-driven approach reduces unnecessary transmissions, lowering duty cycle and collision load, while concentrating link protection on updates that carry genuinely new information.
+
+%----------------------------
+\subsection{Policy Structure}
+\label{subsec:policy_overview}
+
+Each device~$k$ maintains a single state variable, the local \ac{AoI} $\Delta_k^{\mathrm{loc}}(t)$. At each time instant~$t$, device~$k$ evaluates the policy
+\begin{equation}
+    \pi_k(t):\;
+    \bigl(\hat{D}_k(t),\,\Delta_k^{\mathrm{loc}}(t)\bigr)
+    \;\mapsto\;
+    \bigl(a_k(t),\,h_k(t),\,\mathrm{CR}_k(t)\bigr),
+    \label{eq:policy}
+\end{equation}
+where $a_k(t) \in \{0,1\}$ is the transmit/silence decision, $h_k(t) \in \{h_{\min},\ldots,h_{\max}\}$ is the number of header replicas, and $\mathrm{CR}_k(t)$ determines the coding rate $\mathrm{CR}$ and the resulting payload fragmentation. The three components of~\eqref{eq:policy} are described below.
+
+%----------------------------
+\subsection{Transmission Decision}
+\label{subsec:trigger}
+
+The transmission decision is governed by a semantic distortion threshold that adapts to the local \ac{AoI}:
+\begin{equation}
+    a_k(t) =
+    \begin{cases}
+        1, & \text{if } \hat{D}_k(t) \geq \varepsilon_{\mathrm{th}}\!\left(\Delta_k^{\mathrm{loc}}(t)\right), \\
+        0, & \text{otherwise},
+    \end{cases}
+    \label{eq:trigger}
+\end{equation}
+where the threshold function is
+\begin{equation}
+    \varepsilon_{\mathrm{th}}(\Delta) =
+      \max\!\left(\varepsilon_{\min},\; \varepsilon_0 - \beta\,\Delta_k^{\mathrm{loc}}(t)\right),
+    \label{eq:dynamic_threshold}
+\end{equation}
+with $\varepsilon_0 > 0$ being the baseline distortion threshold, $\varepsilon_{\min} \geq 0$ a lower saturation value, and $\beta > 0$ a tuning parameter. As the local \ac{AoI} grows, the threshold decreases, so that even a moderate distortion suffices to trigger a transmission, preventing the gateway from holding an indefinitely stale estimate. Conversely, when the gateway was recently updated ($\Delta_k^{\mathrm{loc}} \approx 0$), only a large distortion justifies the overhead of a new packet.
+
+When $a_k(t) = 1$, device~$k$ proceeds to resource configuration; when $a_k(t) = 0$, it remains silent, avoiding both energy expenditure and unnecessary collision load. Upon any transmission, $\Delta_k^{\mathrm{loc}}(t)$ is reset to zero regardless of the reception outcome, since no acknowledgment is available.
+
+%----------------------------
+\subsection{Header and Coding Rate Selection}
+\label{subsec:header}
+
+Given $a_k(t) = 1$, device~$k$ jointly selects header redundancy and coding rate based on $\hat{D}_k(t)$. Let
+\begin{equation}
+\mathcal{S} = \left\{ \mathbf{s}^{(1)},\, \mathbf{s}^{(2)},\, \dots,\, \mathbf{s}^{(M)} \right\}
+\end{equation}
+be a set of $M$ transmission configurations ordered by increasing robustness, where each $\mathbf{s}^{(m)} = \bigl( h^{(m)}, \mathrm{CR}^{(m)} \bigr)$ specifies a combination of header replicas and coding rate. Let $\{ \theta_0, \theta_1, \dots, \theta_{M-1}, \theta_M \}$ be ordered distortion thresholds with $0 = \theta_0 < \theta_1 < \cdots < \theta_{M-1} < \theta_M = \infty$. The selected configuration is
+\begin{equation}
+    \mathbf{s}_k(t) = \mathbf{s}^{(i)}, \quad \text{if } \theta_{i-1} \le \hat{D}_k(t) < \theta_i,
+    \label{eq:semantic_config}
+\end{equation}
+for $i \in \{1,\dots,M\}$.
+
+Lower distortion levels are mapped to more aggressive configurations (higher coding rates, fewer header replicas), prioritizing spectral efficiency. Higher distortion levels trigger more robust configurations, jointly increasing header redundancy and payload protection to maximize the packet success probability. This joint design ensures that header detection and payload decoding reliability are always matched to the semantic importance of the transmitted update.
+
+%----------------------------
+\subsection{Per-Packet Energy Consumption}
+\label{subsec:energy_protocol}
+
+The energy consumed per transmitted packet under the adaptive policy~\eqref{eq:policy} is
+\begin{equation}
+    E_{\mathrm{pkt}}(t) =
+      \bigl(h_k(t)\,t_h + f_k(t)\,t_f\bigr)\, P_{\mathrm{tx}},
+    \label{eq:energy_adaptive}
+\end{equation}
+where the fragment count $f_k(t)$ is obtained from~\eqref{eq:fragments} with the time-varying coding rate $\mathrm{CR}(t)$:
+\begin{equation}
+    f_k(t) = \left\lceil \frac{l + 3}{6 \cdot \mathrm{CR}(t)} \right\rceil.
+    \label{eq:fragments_adaptive}
+\end{equation}
+This generalizes~\eqref{eq:energy_pkt} to the time-varying setting, coupling energy expenditure directly to both the local \ac{AoI} (through $h_k(t)$) and the estimated semantic distortion (through $\mathrm{CR}_k(t)$), thereby realizing a joint semantic-driven resource allocation.
+
+% -------------------------------------------------------
+\section{Numerical Results}
+\label{sec:results}
+
+Baseline simulation results evaluating \ac{AoI}, goodput, and energy efficiency for a \ac{LR-FHSS} network under fixed transmission configurations are available at~\href{https://github.com/jamfarhat/LR-FHSS\_and\_SemanticCommunications}{[link]}. The integration of the semantic distortion model and the adaptive protocol proposed in Section~\ref{sec:protocol} is currently under development.
+
+% -------------------------------------------------------
+
+\bibliographystyle{IEEEtran}
+\bibliography{IEEEabrv,references}
+
+\end{document}
