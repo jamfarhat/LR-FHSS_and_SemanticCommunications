@@ -282,9 +282,9 @@ def main():
         sim_time=SIM_TIME,
         average_interval=lam,
         seed=SEED,
-        mode='periodic',
+        mode='poisson',
     )
-    print(f'Decision epochs: {len(decision_intervals)} (periodic, λ={lam}s)')
+    print(f'Decision epochs: {len(decision_intervals)} (Poisson, λ={lam}s)')
 
     # ── Run each protocol on the same process ─────────────────────────────
     common = dict(base_params)
