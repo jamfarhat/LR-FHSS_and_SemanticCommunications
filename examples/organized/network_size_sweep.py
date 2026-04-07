@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from lrfhss.run import run_sim_detailed
 from lrfhss.settings import Settings
-from lrfhss.traffic import DistortionAwareExponentialTraffic, SemanticTraffic
+from lrfhss.traffic import DistortionAwareExponentialTraffic, PrecomputedSemanticTraffic
 from examples.organized.sim_params import get_base_traffic_params, get_semantic_params
 from examples.organized.plot_style import apply_matlab_style, save_fig, protocol_plot_kwargs
 
@@ -70,7 +70,7 @@ def _build_protocols() -> dict:
             'traffic_param': base_traffic_params,
         },
         'Semantic': {
-            'traffic_class': SemanticTraffic,
+            'traffic_class': PrecomputedSemanticTraffic,
             'traffic_param': semantic_params,
         },
     }

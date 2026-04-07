@@ -24,8 +24,12 @@ def _run_sim_internal(settings: Settings, seed=0):
     
     for i in range(settings.number_nodes):
         # CRITICAL: Each node needs its OWN traffic_generator instance
-        # (not shared across nodes)
-        traffic_gen = settings.traffic_generator.__class__(settings.traffic_generator.traffic_param)
+        # (not shared across nodes).
+        # Inject sim_time so threshold-based classes (e.g. PrecomputedSemanticTraffic)
+        # can size their AR(1) pre-generation correctly.
+        _tp = dict(settings.traffic_generator.traffic_param)
+        _tp.setdefault('sim_time', float(settings.simulation_time))
+        traffic_gen = settings.traffic_generator.__class__(_tp)
         node = Node(
             settings.obw,
             settings.headers,
@@ -53,7 +57,13 @@ def _run_sim_internal(settings: Settings, seed=0):
     distortions = []
     for node in nodes:
         tg = node.traffic_generator
-        if hasattr(tg, 'get_average_distortion'):
+        # Use time-averaged distortion: D̄ = (1/T) ∫ |x(t) - x̂(t)| dt
+        # This is the fair comparison metric across all protocols.
+        if hasattr(tg, 'get_time_averaged_distortion'):
+            d = tg.get_time_averaged_distortion()
+            if not np.isnan(d):
+                distortions.append(float(d))
+        elif hasattr(tg, 'get_average_distortion'):
             d = tg.get_average_distortion()
             if not np.isnan(d):
                 distortions.append(float(d))

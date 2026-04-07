@@ -8,6 +8,7 @@ def get_base_traffic_params() -> dict:
         'average_interval': 300,
         'alpha': 0.95,
         'sigma_w': 1.0,
+        'lambda_ref': 300,   # fixed reference epoch for AR(1) alpha scaling
     }
 
 

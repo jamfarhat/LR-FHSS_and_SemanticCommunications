@@ -33,13 +33,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from lrfhss.run import run_sim_detailed
 from lrfhss.settings import Settings
-from lrfhss.traffic import DistortionAwareExponentialTraffic, SemanticTraffic
+from lrfhss.traffic import DistortionAwareExponentialTraffic, PrecomputedSemanticTraffic
 from examples.organized.sim_params import get_base_traffic_params, get_semantic_params
 from examples.organized.plot_style import apply_matlab_style, save_fig, protocol_plot_kwargs
 
 DEFAULT_DEVICES = 60000
 SIM_TIME = 3600
-SEEDS = [0, 1, 2]
+SEEDS = [0, 1]
 TX_POWER_W = 0.1
 
 LAMBDA_VALUES = [60, 120, 180, 300, 450, 600, 900, 1200, 1800]
@@ -114,7 +114,7 @@ def main():
                 'traffic_class': DistortionAwareExponentialTraffic, 'traffic_param': base_tp},
         'DR9': {'code': '2/3', 'headers': 2,
                 'traffic_class': DistortionAwareExponentialTraffic, 'traffic_param': base_tp},
-        'Semantic': {'traffic_class': SemanticTraffic, 'traffic_param': sem_tp},
+        'Semantic': {'traffic_class': PrecomputedSemanticTraffic, 'traffic_param': sem_tp},
     }
 
     print('=' * 80)

@@ -96,18 +96,21 @@ def _build_x_hat_continuous(t_cont: np.ndarray, epoch_df: pd.DataFrame) -> np.nd
             x_hat[:] = epoch_df['x_hat'].iloc[0]
         return x_hat
 
-    # Fill step-wise
-    current_val = epoch_df['x_hat'].iloc[0]  # value before first TX
-    prev_idx = 0
-    for _, row in tx_rows.iterrows():
-        t_tx = row['time']
-        mask = (t_cont >= prev_idx * DT_FINE) & (t_cont < t_tx)
-        x_hat[mask] = current_val
-        current_val = row['x_current']
-        prev_idx = int(np.searchsorted(t_cont, t_tx))
-
-    # Fill remainder after last TX
-    x_hat[prev_idx:] = current_val
+    # Fill step-wise: x_hat holds the last transmitted value
+    # Before first TX: use initial estimate
+    current_val = tx_rows.iloc[0]['x_hat'] if 'x_hat' in tx_rows.columns else 0.0
+    
+    tx_times = tx_rows['time'].values
+    tx_values = tx_rows['x_current'].values
+    
+    tx_idx = 0
+    for i, t in enumerate(t_cont):
+        # Check if we've passed a transmission time
+        while tx_idx < len(tx_times) and t >= tx_times[tx_idx]:
+            current_val = tx_values[tx_idx]
+            tx_idx += 1
+        x_hat[i] = current_val
+    
     return x_hat
 
 
@@ -115,6 +118,50 @@ def _simulate_trace(traffic_gen, decision_intervals: list[float]) -> pd.DataFram
     for dt in decision_intervals:
         traffic_gen.on_decision_epoch(dt)
     trace = traffic_gen.get_trace()
+    if not trace:
+        return pd.DataFrame(columns=['time', 'x_current', 'x_hat', 'distortion',
+                                     'threshold', 'tx_decision'])
+    return pd.DataFrame(trace)
+
+
+def _simulate_semantic_trace(traffic_gen, ar1_process, sim_time: float) -> pd.DataFrame:
+    """
+    Simulate semantic traffic with threshold-triggered transmissions.
+    
+    Instead of checking at pre-determined intervals, this function scans
+    the continuous AR(1) process at fine resolution (DT_FINE) and triggers
+    transmission immediately when distortion exceeds threshold.
+    
+    Only records transmission events (tx_decision=True) to avoid clutter.
+    """
+    t_arr = ar1_process.t_array
+    x_arr = ar1_process.x_array
+    
+    x_last_tx = float(x_arr[0])
+    last_tx_time = 0.0
+    
+    trace = []
+    
+    for i in range(1, len(t_arr)):
+        t = float(t_arr[i])
+        x = float(x_arr[i])
+        aoi = t - last_tx_time
+        distortion = abs(x - x_last_tx)
+        threshold = traffic_gen.get_threshold(aoi)
+        
+        if distortion >= threshold:
+            # Threshold crossed - transmit! Record only TX events.
+            trace.append({
+                'time': t,
+                'x_current': x,
+                'x_hat': x_last_tx,
+                'distortion': distortion,
+                'threshold': threshold,
+                'tx_decision': True,
+            })
+            x_last_tx = x
+            last_tx_time = t
+    
     if not trace:
         return pd.DataFrame(columns=['time', 'x_current', 'x_hat', 'distortion',
                                      'threshold', 'tx_decision'])
@@ -160,27 +207,30 @@ def _plot_protocol_figure(
                  color='#7E2F8E', linestyle=':', linewidth=1.4,
                  label=r'$\varepsilon_{\mathrm{th}}(\Delta)$')
 
-    # TX/No-TX markers: placed just BEFORE the update (D_k before it drops to zero).
-    # epoch 'time' is the end of the interval; the decision fires at t_tx,
-    # so we look up D_k at the last fine-grid sample strictly before t_tx.
-    def _d_before(times_arr):
-        """D_k value one dt_fine step before each epoch time."""
-        vals = []
-        for t_tx in times_arr:
-            idx = int(np.searchsorted(t_cont, t_tx, side='left'))
-            idx = max(idx - 1, 0)          # one sample before the update
-            vals.append(d_cont[idx])
-        return np.array(vals)
-
+    # TX markers: use exact distortion values from epoch data
     if not tx_df.empty:
-        ax2.scatter(tx_df['time'], _d_before(tx_df['time'].values),
-                    color='k', marker='v', s=30, zorder=4, label='TX')
+        if 'distortion' in tx_df.columns:
+            # Use exact recorded distortion values (more accurate)
+            ax2.scatter(tx_df['time'], tx_df['distortion'],
+                        color='k', marker='v', s=30, zorder=4, label='TX')
+        else:
+            # Fallback for protocols without distortion tracking
+            def _d_before(times_arr):
+                """D_k value one dt_fine step before each epoch time."""
+                vals = []
+                for t_tx in times_arr:
+                    idx = int(np.searchsorted(t_cont, t_tx, side='left'))
+                    idx = max(idx - 1, 0)
+                    vals.append(d_cont[idx])
+                return np.array(vals)
+            ax2.scatter(tx_df['time'], _d_before(tx_df['time'].values),
+                        color='k', marker='v', s=30, zorder=4, label='TX')
 
-    # No-TX markers (Semantic only)
+    # No-TX markers (Semantic only) - should not appear with new implementation
     if protocol == 'Semantic':
         no_tx_df = epoch_df[~epoch_df['tx_decision']]
-        if not no_tx_df.empty:
-            ax2.scatter(no_tx_df['time'], _d_before(no_tx_df['time'].values),
+        if not no_tx_df.empty and 'distortion' in no_tx_df.columns:
+            ax2.scatter(no_tx_df['time'], no_tx_df['distortion'],
                         color='#555555', marker='x', s=32, alpha=0.9,
                         zorder=4, label='No TX')
 
@@ -254,7 +304,12 @@ def main():
     traces: dict[str, pd.DataFrame] = {}
     for protocol, gen in protocols.items():
         print(f'Simulating {protocol}...')
-        traces[protocol] = _simulate_trace(gen, decision_intervals)
+        if protocol == 'Semantic':
+            # Semantic uses threshold-triggered transmission
+            traces[protocol] = _simulate_semantic_trace(gen, proc, SIM_TIME)
+        else:
+            # DR8/DR9 use periodic intervals
+            traces[protocol] = _simulate_trace(gen, decision_intervals)
         csv_path = os.path.join(output_dir, f'trace_{protocol.lower()}.csv')
         traces[protocol].to_csv(csv_path, index=False)
         tx_rate = float(traces[protocol]['tx_decision'].mean())
